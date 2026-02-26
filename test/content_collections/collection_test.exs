@@ -17,6 +17,45 @@ defmodule ContentCollections.CollectionTest do
       compile_time: true
   end
 
+  defmodule CountingLoader do
+    @behaviour ContentCollections.Loader
+
+    @impl true
+    def load(_opts) do
+      Process.put(:counting_loader_calls, Process.get(:counting_loader_calls, 0) + 1)
+
+      {:ok,
+       [
+         %{id: "1", slug: "one", content: "# One", metadata: %{published: true}},
+         %{id: "2", slug: "two", content: "# Two", metadata: %{published: false}}
+       ]}
+    end
+  end
+
+  defmodule RuntimeCachedCollection do
+    use ContentCollections.Collection,
+      name: :runtime_cached_collection,
+      loader: {CountingLoader, []},
+      compile_time: false,
+      cache: true
+  end
+
+  defmodule RuntimeNoCacheCollection do
+    use ContentCollections.Collection,
+      name: :runtime_no_cache_collection,
+      loader: {CountingLoader, []},
+      compile_time: false,
+      cache: false
+  end
+
+  setup do
+    Process.delete(:counting_loader_calls)
+    :persistent_term.erase(RuntimeCollection.__cache_key__())
+    :persistent_term.erase(RuntimeCachedCollection.__cache_key__())
+    :persistent_term.erase(RuntimeNoCacheCollection.__cache_key__())
+    :ok
+  end
+
   test "runtime collection query API works" do
     entries = RuntimeCollection.all()
     assert length(entries) == 2
@@ -61,5 +100,35 @@ defmodule ContentCollections.CollectionTest do
 
       ErrorLoaderCollection.all()
     end
+  end
+
+  test "runtime cache loads once when cache is enabled" do
+    assert Process.get(:counting_loader_calls, 0) == 0
+
+    assert length(RuntimeCachedCollection.all()) == 2
+    assert length(RuntimeCachedCollection.all()) == 2
+
+    assert Process.get(:counting_loader_calls, 0) == 1
+  end
+
+  test "runtime cache can be bypassed when disabled" do
+    assert Process.get(:counting_loader_calls, 0) == 0
+
+    assert length(RuntimeNoCacheCollection.all()) == 2
+    assert length(RuntimeNoCacheCollection.all()) == 2
+
+    assert Process.get(:counting_loader_calls, 0) == 2
+  end
+
+  test "reload invalidates runtime cache and repopulates entries" do
+    assert length(RuntimeCachedCollection.all()) == 2
+    assert Process.get(:counting_loader_calls, 0) == 1
+
+    assert {:ok, entries} = RuntimeCachedCollection.reload()
+    assert length(entries) == 2
+    assert Process.get(:counting_loader_calls, 0) == 2
+
+    assert length(RuntimeCachedCollection.all()) == 2
+    assert Process.get(:counting_loader_calls, 0) == 2
   end
 end
