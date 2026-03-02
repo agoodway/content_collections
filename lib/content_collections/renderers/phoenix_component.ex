@@ -34,6 +34,7 @@ defmodule ContentCollections.Renderers.PhoenixComponent do
 
   alias ContentCollections.ComponentParser
   alias ContentCollections.Renderers.MDEx, as: MDExRenderer
+  alias Phoenix.HTML.Safe
 
   @impl true
   def render(content, opts \\ []) when is_binary(content) do
@@ -146,13 +147,11 @@ defmodule ContentCollections.Renderers.PhoenixComponent do
   end
 
   defp render_phoenix_component(component_module, component_name, attrs) do
-    try do
-      # Always try as a function component first
-      render_function_component(component_module, component_name, attrs)
-    rescue
-      e ->
-        {:error, "Failed to render component: #{Exception.message(e)}"}
-    end
+    # Always try as a function component first
+    render_function_component(component_module, component_name, attrs)
+  rescue
+    e ->
+      {:error, "Failed to render component: #{Exception.message(e)}"}
   end
 
   defp render_function_component(component_module, component_name, attrs) do
@@ -173,20 +172,16 @@ defmodule ContentCollections.Renderers.PhoenixComponent do
 
   if Code.ensure_loaded?(Phoenix.LiveView.Rendered) do
     defp render_component_result(%Phoenix.LiveView.Rendered{} = rendered) do
-      Phoenix.HTML.Safe.to_iodata(rendered)
+      Safe.to_iodata(rendered)
       |> IO.iodata_to_binary()
     end
   end
 
   defp render_component_result(result) do
-    # Try to convert to string using protocol if available
-    try do
-      Phoenix.HTML.Safe.to_iodata(result)
-      |> IO.iodata_to_binary()
-    rescue
-      _ ->
-        # Fallback to inspect if protocol not available
-        inspect(result)
-    end
+    Safe.to_iodata(result)
+    |> IO.iodata_to_binary()
+  rescue
+    _ ->
+      inspect(result)
   end
 end

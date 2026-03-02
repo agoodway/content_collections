@@ -224,6 +224,39 @@ posts_2024 = MyApp.Blog.filter(fn entry ->
 end)
 ```
 
+### `filter/2`
+
+Filters entries with a predicate, then paginates the filtered result set.
+
+```elixir
+{entries, meta} = MyApp.Blog.filter(& &1.metadata.published, page: 2, per_page: 10)
+
+meta
+# => %{
+#   page: 2,
+#   per_page: 10,
+#   total_entries: 27,
+#   total_pages: 3,
+#   has_prev_page: true,
+#   has_next_page: true
+# }
+```
+
+### `paginate/1`
+
+Paginates all entries and returns a tuple of `{entries, meta}`.
+
+```elixir
+{entries, meta} = MyApp.Blog.paginate(page: 1, per_page: 20)
+```
+
+Supported options:
+
+- `:page` - page number (default `1`)
+- `:per_page` - page size (default `20`)
+
+Both options accept positive integers. Invalid values fall back to defaults.
+
 ### `find/1`
 
 Returns the first entry matching a predicate, or `nil`.

@@ -45,4 +45,17 @@ defmodule ContentCollections.Example do
     |> Enum.sort_by(& &1.metadata[:date], {:desc, Date})
     |> Enum.take(limit)
   end
+
+  @doc """
+  Get a paginated list of published posts.
+  """
+  def published_page(page \\ 1, per_page \\ 10) do
+    filter(
+      fn entry ->
+        Map.get(entry.metadata, :published, false)
+      end,
+      page: page,
+      per_page: per_page
+    )
+  end
 end

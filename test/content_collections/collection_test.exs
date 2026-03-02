@@ -48,11 +48,46 @@ defmodule ContentCollections.CollectionTest do
       cache: false
   end
 
+  defmodule PaginationLoader do
+    @behaviour ContentCollections.Loader
+
+    @impl true
+    def load(_opts) do
+      entries =
+        Enum.map(1..55, fn number ->
+          %{
+            id: Integer.to_string(number),
+            slug: "post-#{number}",
+            content: "# Post #{number}",
+            metadata: %{published: rem(number, 2) == 0}
+          }
+        end)
+
+      {:ok, entries}
+    end
+  end
+
+  defmodule RuntimePaginationCollection do
+    use ContentCollections.Collection,
+      name: :runtime_pagination_collection,
+      loader: {PaginationLoader, []},
+      compile_time: false,
+      cache: true
+  end
+
+  defmodule CompileTimePaginationCollection do
+    use ContentCollections.Collection,
+      name: :compile_time_pagination_collection,
+      loader: {PaginationLoader, []},
+      compile_time: true
+  end
+
   setup do
     Process.delete(:counting_loader_calls)
     :persistent_term.erase(RuntimeCollection.__cache_key__())
     :persistent_term.erase(RuntimeCachedCollection.__cache_key__())
     :persistent_term.erase(RuntimeNoCacheCollection.__cache_key__())
+    :persistent_term.erase(RuntimePaginationCollection.__cache_key__())
     :ok
   end
 
@@ -130,5 +165,90 @@ defmodule ContentCollections.CollectionTest do
 
     assert length(RuntimeCachedCollection.all()) == 2
     assert Process.get(:counting_loader_calls, 0) == 2
+  end
+
+  test "paginate returns defaults and metadata" do
+    {entries, meta} = RuntimePaginationCollection.paginate()
+
+    assert length(entries) == 20
+    assert hd(entries).id == "1"
+    assert List.last(entries).id == "20"
+
+    assert meta.page == 1
+    assert meta.per_page == 20
+    assert meta.total_entries == 55
+    assert meta.total_pages == 3
+    assert meta.has_prev_page == false
+    assert meta.has_next_page == true
+  end
+
+  test "paginate supports explicit page and per_page" do
+    {runtime_entries, runtime_meta} = RuntimePaginationCollection.paginate(page: 3, per_page: 10)
+
+    {compile_entries, compile_meta} =
+      CompileTimePaginationCollection.paginate(page: 3, per_page: 10)
+
+    assert Enum.map(runtime_entries, & &1.id) == Enum.map(compile_entries, & &1.id)
+    assert Enum.map(runtime_entries, & &1.id) == Enum.map(21..30, &Integer.to_string/1)
+
+    assert runtime_meta.page == 3
+    assert runtime_meta.per_page == 10
+    assert runtime_meta.total_entries == 55
+    assert runtime_meta.total_pages == 6
+    assert runtime_meta.has_prev_page == true
+    assert runtime_meta.has_next_page == true
+    assert runtime_meta == compile_meta
+  end
+
+  test "paginate returns empty list for out-of-range page" do
+    {entries, meta} = RuntimePaginationCollection.paginate(page: 999, per_page: 10)
+
+    assert entries == []
+    assert meta.page == 999
+    assert meta.per_page == 10
+    assert meta.total_entries == 55
+    assert meta.total_pages == 6
+    assert meta.has_prev_page == true
+    assert meta.has_next_page == false
+  end
+
+  test "paginate normalizes string and invalid opts" do
+    {entries, meta} = RuntimePaginationCollection.paginate(page: "2", per_page: "15")
+
+    assert length(entries) == 15
+    assert hd(entries).id == "16"
+    assert meta.page == 2
+    assert meta.per_page == 15
+    assert meta.total_pages == 4
+
+    {defaulted_entries, defaulted_meta} =
+      RuntimePaginationCollection.paginate(page: 0, per_page: "bad")
+
+    assert length(defaulted_entries) == 20
+    assert hd(defaulted_entries).id == "1"
+    assert defaulted_meta.page == 1
+    assert defaulted_meta.per_page == 20
+  end
+
+  test "filter/2 paginates filtered results" do
+    {entries, meta} =
+      RuntimePaginationCollection.filter(& &1.metadata.published, page: 2, per_page: 5)
+
+    assert Enum.map(entries, & &1.id) == ["12", "14", "16", "18", "20"]
+    assert meta.page == 2
+    assert meta.per_page == 5
+    assert meta.total_entries == 27
+    assert meta.total_pages == 6
+    assert meta.has_prev_page == true
+    assert meta.has_next_page == true
+  end
+
+  test "paginate uses cached entries for runtime cached collections" do
+    assert Process.get(:counting_loader_calls, 0) == 0
+
+    {_entries1, _meta1} = RuntimeCachedCollection.paginate(page: 1, per_page: 1)
+    {_entries2, _meta2} = RuntimeCachedCollection.paginate(page: 2, per_page: 1)
+
+    assert Process.get(:counting_loader_calls, 0) == 1
   end
 end

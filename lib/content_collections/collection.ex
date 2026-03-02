@@ -67,9 +67,9 @@ defmodule ContentCollections.Collection do
         def __cache_enabled__, do: false
         def __cache_key__, do: {ContentCollections.Collection, __MODULE__, :entries}
 
-        defp load_entries do
-          @entries
-        end
+        defp load_entries, do: @entries
+        defp get_compile_time_by_id(id), do: Map.get(@entries_by_id, id)
+        defp get_compile_time_by_slug(slug), do: Map.get(@entries_by_slug, slug)
       else
         def __compile_time__, do: false
         def __entries__, do: get_runtime_entries()
@@ -88,36 +88,46 @@ defmodule ContentCollections.Collection do
 
         defp get_runtime_entries do
           if __cache_enabled__() do
-            cache_key = __cache_key__()
-
-            case :persistent_term.get(cache_key, :not_loaded) do
-              :not_loaded ->
-                entries = load_entries()
-                :persistent_term.put(cache_key, entries)
-                entries
-
-              entries ->
-                entries
-            end
+            load_or_get_cached()
           else
             load_entries()
           end
         end
+
+        defp load_or_get_cached do
+          cache_key = __cache_key__()
+
+          case :persistent_term.get(cache_key, :not_loaded) do
+            :not_loaded ->
+              entries = load_entries()
+              :persistent_term.put(cache_key, entries)
+              entries
+
+            entries ->
+              entries
+          end
+        end
+
+        defp get_compile_time_by_id(_id), do: nil
+        defp get_compile_time_by_slug(_slug), do: nil
       end
 
+      ContentCollections.Collection.__define_finders__()
+      ContentCollections.Collection.__define_filters__()
+      ContentCollections.Collection.__define_lifecycle__()
+    end
+  end
+
+  @doc false
+  defmacro __define_finders__ do
+    quote do
       def __collection_name__, do: @collection_name
       def __loader__, do: @loader
       def __renderer__, do: @renderer
 
-      # Query functions
-
       @impl true
       def all do
-        if __compile_time__() do
-          __entries__()
-        else
-          __entries__()
-        end
+        __entries__()
       end
 
       @impl true
@@ -137,19 +147,23 @@ defmodule ContentCollections.Collection do
           Enum.find(all(), fn entry -> entry.slug == slug end)
         end
       end
+    end
+  end
 
-      if @compile_time do
-        defp get_compile_time_by_id(id), do: Map.get(@entries_by_id, id)
-        defp get_compile_time_by_slug(slug), do: Map.get(@entries_by_slug, slug)
-      else
-        defp get_compile_time_by_id(_id), do: nil
-        defp get_compile_time_by_slug(_slug), do: nil
-      end
-
+  @doc false
+  defmacro __define_filters__ do
+    quote do
       @impl true
       def filter(fun) when is_function(fun, 1) do
         all()
         |> Enum.filter(fun)
+      end
+
+      @impl true
+      def filter(fun, opts) when is_function(fun, 1) and is_list(opts) do
+        all()
+        |> Enum.filter(fun)
+        |> ContentCollections.Collection.paginate_entries(opts)
       end
 
       @impl true
@@ -167,25 +181,40 @@ defmodule ContentCollections.Collection do
       def exists?(id) when is_binary(id) do
         get(id) != nil
       end
+    end
+  end
+
+  @doc false
+  defmacro __define_lifecycle__ do
+    quote do
+      @impl true
+      def paginate(opts \\ []) when is_list(opts) do
+        all()
+        |> ContentCollections.Collection.paginate_entries(opts)
+      end
 
       @impl true
       def reload do
         if __compile_time__() do
           {:error, :compile_time_collection}
         else
-          if __cache_enabled__() do
-            cache_key = __cache_key__()
-            :persistent_term.erase(cache_key)
-            entries = __entries__()
-            {:ok, entries}
-          else
-            {:ok, load_entries()}
-          end
+          reload_runtime_entries()
+        end
+      end
+
+      defp reload_runtime_entries do
+        if __cache_enabled__() do
+          cache_key = __cache_key__()
+          :persistent_term.erase(cache_key)
+          entries = __entries__()
+          {:ok, entries}
+        else
+          {:ok, load_entries()}
         end
       end
 
       # Allow collections to be extended
-      defoverridable all: 0, get: 1, get_by_slug: 1, filter: 1
+      defoverridable all: 0, get: 1, get_by_slug: 1, filter: 1, filter: 2, paginate: 1
     end
   end
 
@@ -212,6 +241,19 @@ defmodule ContentCollections.Collection do
             ]
 
   @doc """
+  Filters entries by a function and paginates the results.
+  """
+  @callback filter(
+              fun :: (ContentCollections.Entry.t() -> boolean()),
+              opts :: keyword()
+            ) :: {[ContentCollections.Entry.t()], map()}
+
+  @doc """
+  Paginates all entries.
+  """
+  @callback paginate(opts :: keyword()) :: {[ContentCollections.Entry.t()], map()}
+
+  @doc """
   Finds the first entry matching a function.
   """
   @callback find(fun :: (ContentCollections.Entry.t() -> boolean())) ::
@@ -232,6 +274,54 @@ defmodule ContentCollections.Collection do
   """
   @callback reload() ::
               {:ok, [ContentCollections.Entry.t()]} | {:error, :compile_time_collection}
+
+  @doc false
+  def paginate_entries(entries, opts) do
+    %{page: page, per_page: per_page} = normalize_pagination_opts(opts)
+    total_entries = length(entries)
+
+    total_pages =
+      if total_entries == 0, do: 0, else: div(total_entries + per_page - 1, per_page)
+
+    offset = (page - 1) * per_page
+
+    page_entries =
+      entries
+      |> Enum.drop(offset)
+      |> Enum.take(per_page)
+
+    {page_entries, build_pagination_meta(page, per_page, total_entries, total_pages)}
+  end
+
+  defp build_pagination_meta(page, per_page, total_entries, total_pages) do
+    %{
+      page: page,
+      per_page: per_page,
+      total_entries: total_entries,
+      total_pages: total_pages,
+      has_prev_page: page > 1 and total_pages > 0,
+      has_next_page: page < total_pages
+    }
+  end
+
+  defp normalize_pagination_opts(opts) do
+    %{
+      page: normalize_positive_integer(Keyword.get(opts, :page, 1), 1),
+      per_page: normalize_positive_integer(Keyword.get(opts, :per_page, 20), 20)
+    }
+  end
+
+  defp normalize_positive_integer(value, _default) when is_integer(value) and value > 0,
+    do: value
+
+  defp normalize_positive_integer(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer > 0 -> integer
+      _ -> default
+    end
+  end
+
+  defp normalize_positive_integer(_value, default), do: default
 
   # Helper function to load and transform entries
   def load_and_transform_entries(loader_module, loader_opts, collection_module) do
