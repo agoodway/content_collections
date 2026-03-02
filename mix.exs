@@ -15,7 +15,12 @@ defmodule ContentCollections.MixProject do
 
   def cli do
     [
-      preferred_envs: [cover: :test, "cover.export": :test]
+      preferred_envs: [
+        check: :test,
+        precommit: :test,
+        cover: :test,
+        "cover.export": :test
+      ]
     ]
   end
 
@@ -32,14 +37,27 @@ defmodule ContentCollections.MixProject do
       {:yaml_elixir, "~> 2.11"},
       {:mdex, "~> 0.2"},
       {:phoenix_live_view, "~> 1.1", optional: true},
-      {:phoenix_html, "~> 4.1", optional: true}
+      {:phoenix_html, "~> 4.1", optional: true},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.21", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 
   defp aliases do
     [
       cover: ["test --cover"],
-      "cover.export": ["test --cover --export-coverage default"]
+      "cover.export": ["test --cover --export-coverage default"],
+      check: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format --check-formatted",
+        "credo --strict",
+        "doctor",
+        "dialyzer",
+        "test"
+      ],
+      precommit: ["check"]
     ]
   end
 end
